@@ -136,49 +136,4 @@ const server = net.createServer((clientSocket) => {
 
 server.listen(PORT, () => {
     console.log(`🚀 Proxy Postgres ativo na porta ${PORT}`);
-});ing("utf8", offset, valEnd);
-            offset = valEnd + 1;
-
-            if (key === "user") {
-                username = value;
-            }
-        }
-
-        if (!username) {
-            console.log("❌ Pacote recebido sem username.");
-            clientSocket.destroy();
-            return;
-        }
-
-        if (!DOCKER_HOST_REGEX.test(username)) {
-            console.log(`❌ Username "${username}" não bate com hostname Docker.`);
-            clientSocket.destroy();
-            return;
-        }
-
-        console.log(`➡ Redirecionando para ${username}:${TARGET_PORT}`);
-
-        const pgSocket = net.connect(TARGET_PORT, username);
-
-        pgSocket.on("connect", () => {
-            // Envia o StartupMessage original
-            pgSocket.write(buffer);
-        });
-
-        pgSocket.on("error", (err) => {
-            console.log(`❌ Falha ao conectar em ${username}:`, err.message);
-            clientSocket.destroy();
-        });
-
-        // PIPES
-        pgSocket.pipe(clientSocket);
-        clientSocket.pipe(pgSocket);
-
-        // Limpa para não tentar processar novamente
-        buffer = Buffer.alloc(0);
-    });
-});
-
-server.listen(PORT, () => {
-    console.log(`🚀 Proxy Postgres ativo na porta ${PORT}`);
 });
