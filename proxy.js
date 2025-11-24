@@ -14,81 +14,98 @@ function sendPgError(client, message) {
         `M${message}\0` +
         "\0";
 
-    const f = Buffer.from(fields);
-    const len = Buffer.alloc(4);
-    len.writeInt32BE(f.length + 4);
+    const bufFields = Buffer.from(fields);
+    const bufLen = Buffer.alloc(4);
+    bufLen.writeInt32BE(bufFields.length + 4);
 
-    const msg = Buffer.concat([
+    const finalBuf = Buffer.concat([
         Buffer.from("E"),
-        len,
-        f
+        bufLen,
+        bufFields
     ]);
 
-    client.write(msg);
+    client.write(finalBuf);
     client.end();
+    console.log(`[PROXY] → Enviado ErrorResponse para cliente: ${message}`);
 }
 
 const server = net.createServer((client) => {
+    console.log("[PROXY] Nova conexão de cliente");
+
     let buffer = Buffer.alloc(0);
     let sslHandled = false;
     let pgSocket = null;
     let targetHost = null;
 
+    client.setNoDelay(true);
+
     client.on("data", (chunk) => {
-        // Se já conectado, apenas encaminhar
+        console.log("[PROXY] Cliente → proxy, bytes:", chunk.length, " conteúdo (hex):", chunk.toString("hex"));
+
         if (pgSocket) {
-            // Intercepta senha sem modificar nada
-            if (chunk[0] === 0x70) {
+            // interceptando senha
+            if (chunk[0] === 0x70) { // 'p'
                 const len = chunk.readInt32BE(1);
                 const pwd = chunk.toString("utf8", 5, len);
-                console.log("🔑 Password:", pwd);
+                console.log("[PROXY] 💬 PasswordMessage do cliente:", pwd);
             }
 
             pgSocket.write(chunk);
             return;
         }
 
-        // Build buffer até termos uma mensagem completa
+        // buffer inicial
         buffer = Buffer.concat([buffer, chunk]);
-
-        if (buffer.length < 8) return;
+        if (buffer.length < 8) {
+            console.log("[PROXY] buffer inicial menor que 8, aguardando mais dados...");
+            return;
+        }
 
         const length = buffer.readInt32BE(0);
-        if (buffer.length < length) return;
+        console.log("[PROXY] Mensagem inicial length:", length, "buffer.length:", buffer.length);
+
+        if (buffer.length < length) {
+            console.log("[PROXY] Ainda não recebeu a mensagem inteira, aguardando...");
+            return;
+        }
 
         const code = buffer.readInt32BE(4);
+        console.log("[PROXY] Código lido no header:", code);
 
-        // ---- 1) SSLRequest ----
+        // SSLRequest?
         if (!sslHandled && length === 8 && code === SSL_REQUEST_CODE) {
+            console.log("[PROXY] Cliente solicitou SSL → respondendo 'N'");
             client.write("N");
             sslHandled = true;
             buffer = Buffer.alloc(0);
             return;
         }
 
-        // ---- 2) StartupMessage ----
+        // StartupMessage?
         if (code !== PG_PROTOCOL_VERSION) {
+            console.log("[PROXY] Código diferente de PG_PROTOCOL_VERSION, protocolo inválido:", code);
             sendPgError(client, "Protocolo inválido");
             return;
         }
 
-        // Parse StartupMessage
+        // Parsear StartupMessage
         let off = 8;
         let user = null;
         let db = null;
-
         while (off < length) {
-            const kEnd = buffer.indexOf(0, off);
-            if (kEnd === -1) break;
-            const key = buffer.toString("utf8", off, kEnd);
-            off = kEnd + 1;
+            const keyEnd = buffer.indexOf(0, off);
+            if (keyEnd === -1) break;
+            const key = buffer.toString("utf8", off, keyEnd);
+            off = keyEnd + 1;
 
             if (key === "") break;
 
-            const vEnd = buffer.indexOf(0, off);
-            if (vEnd === -1) break;
-            const val = buffer.toString("utf8", off, vEnd);
-            off = vEnd + 1;
+            const valEnd = buffer.indexOf(0, off);
+            if (valEnd === -1) break;
+            const val = buffer.toString("utf8", off, valEnd);
+            off = valEnd + 1;
+
+            console.log(`[PROXY] Param StartupMessage → ${key} = ${val}`);
 
             if (key === "user") user = val;
             if (key === "database") db = val;
@@ -105,30 +122,47 @@ const server = net.createServer((client) => {
         }
 
         targetHost = user;
+        console.log(`[PROXY] Vamos conectar no host Postgres destino: ${targetHost}:${TARGET_PORT} (db=${db})`);
 
-        // ---- Conectar ao Postgres ----
+        // Conectar no Postgres real
         pgSocket = net.connect(TARGET_PORT, targetHost);
 
+        pgSocket.setNoDelay(true);
+
         pgSocket.on("connect", () => {
-            // Envia o StartupMessage original SEM mexer
+            console.log("[PROXY] Conectado ao Postgres real, enviando StartupMessage");
             pgSocket.write(buffer);
         });
 
         pgSocket.on("error", (err) => {
-            console.log("Erro PG:", err.code);
-            sendPgError(client, `Host ${targetHost} não encontrado`);
+            console.log("[PROXY] Erro conexão com Postgres real:", err);
+            sendPgError(client, `Host ${targetHost} não encontrado ou erro de conexão`);
         });
 
         pgSocket.on("data", (data) => {
+            console.log("[PROXY] Postgres → proxy, bytes:", data.length, " conteúdo (hex):", data.toString("hex"));
             client.write(data);
         });
 
-        pgSocket.on("end", () => client.end());
+        pgSocket.on("end", () => {
+            console.log("[PROXY] Conexão com Postgres real finalizada pelo servidor");
+            client.end();
+        });
 
         buffer = Buffer.alloc(0);
+    });
+
+    client.on("close", () => {
+        console.log("[PROXY] Conexão cliente fechada");
+        if (pgSocket) pgSocket.end();
+    });
+
+    client.on("error", (err) => {
+        console.log("[PROXY] Erro no socket do cliente:", err);
+        if (pgSocket) pgSocket.destroy();
     });
 });
 
 server.listen(PORT, () => {
-    console.log(`🚀 Proxy ativo na porta ${PORT}`);
+    console.log(`[PROXY] 🚀 Proxy Postgres (verbose) escutando na porta ${PORT}`);
 });
