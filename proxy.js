@@ -7,138 +7,128 @@ const DOCKER_HOST_REGEX = /^[a-z0-9]{12,40}$/;
 const PG_PROTOCOL_VERSION = 0x00030000;
 const SSL_REQUEST_CODE = 80877103;
 
-// ---- Função: envia erro Postgres para o cliente ----
-function sendPostgresError(client, message) {
+function sendPgError(client, message) {
     const fields =
-        "SERROR\0" +      // Severity
-        "CXX000\0" +      // SQLSTATE genérico
-        `M${message}\0` + // Mensagem
-        "\0";             // Terminador final
+        "SERROR\0" +
+        "CXX000\0" +
+        `M${message}\0` +
+        "\0";
 
-    const bufFields = Buffer.from(fields);
-    const bufLen = Buffer.alloc(4);
-    bufLen.writeInt32BE(bufFields.length + 4);
+    const f = Buffer.from(fields);
+    const len = Buffer.alloc(4);
+    len.writeInt32BE(f.length + 4);
 
-    const finalBuf = Buffer.concat([
-        Buffer.from("E"), // Tipo ErrorResponse
-        bufLen,
-        bufFields
+    const msg = Buffer.concat([
+        Buffer.from("E"),
+        len,
+        f
     ]);
 
-    client.write(finalBuf);
+    client.write(msg);
     client.end();
 }
 
-// ----------------------------------------------------
-
-const server = net.createServer((clientSocket) => {
+const server = net.createServer((client) => {
     let buffer = Buffer.alloc(0);
     let sslHandled = false;
-
-    let clientUser = null;
-    let clientDb = null;
-    let targetHost = null;
     let pgSocket = null;
+    let targetHost = null;
 
-    clientSocket.on("data", (chunk) => {
-        // Se ainda não conectamos ao PG real, tratamos SSL + StartupMessage
-        if (!pgSocket) {
-            buffer = Buffer.concat([buffer, chunk]);
-
-            if (buffer.length < 8) return;
-
-            const length = buffer.readInt32BE(0);
-            if (buffer.length < length) return;
-
-            const code = buffer.readInt32BE(4);
-
-            // ---- 1) Trata SSLRequest ----
-            if (!sslHandled && length === 8 && code === SSL_REQUEST_CODE) {
-                clientSocket.write("N");
-                sslHandled = true;
-                buffer = Buffer.alloc(0);
-                return;
+    client.on("data", (chunk) => {
+        // Se já conectado, apenas encaminhar
+        if (pgSocket) {
+            // Intercepta senha sem modificar nada
+            if (chunk[0] === 0x70) {
+                const len = chunk.readInt32BE(1);
+                const pwd = chunk.toString("utf8", 5, len);
+                console.log("🔑 Password:", pwd);
             }
 
-            // ---- 2) StartupMessage ----
-            if (code !== PG_PROTOCOL_VERSION) {
-                sendPostgresError(clientSocket, "Protocolo inválido");
-                return;
-            }
+            pgSocket.write(chunk);
+            return;
+        }
 
-            // Parse de parâmetros
-            let off = 8;
-            while (off < length) {
-                const keyEnd = buffer.indexOf(0, off);
-                if (keyEnd === -1) break;
+        // Build buffer até termos uma mensagem completa
+        buffer = Buffer.concat([buffer, chunk]);
 
-                const key = buffer.toString("utf8", off, keyEnd);
-                off = keyEnd + 1;
+        if (buffer.length < 8) return;
 
-                if (key === "") break;
+        const length = buffer.readInt32BE(0);
+        if (buffer.length < length) return;
 
-                const valEnd = buffer.indexOf(0, off);
-                if (valEnd === -1) break;
+        const code = buffer.readInt32BE(4);
 
-                const val = buffer.toString("utf8", off, valEnd);
-                off = valEnd + 1;
-
-                if (key === "user") clientUser = val;
-                if (key === "database") clientDb = val;
-            }
-
-            if (!clientUser) {
-                sendPostgresError(clientSocket, "StartupMessage sem username");
-                return;
-            }
-
-            if (!DOCKER_HOST_REGEX.test(clientUser)) {
-                sendPostgresError(clientSocket, `Hostname inválido: ${clientUser}`);
-                return;
-            }
-
-            targetHost = clientUser;
-
-            // ---- Conectar ao Postgres REAL ----
-            pgSocket = net.connect(TARGET_PORT, targetHost, () => {
-                // Envia StartupMessage original
-                pgSocket.write(buffer);
-            });
-
-            // ---- Erro ao conectar ao destino ----
-            pgSocket.on("error", (err) => {
-                console.log(`❌ Falha ao conectar em ${targetHost}:`, err.code);
-                sendPostgresError(clientSocket, `Database ${targetHost} não encontrado`);
-            });
-
-            // ---- Dados vindo do Postgres real ----
-            pgSocket.on("data", (postgresData) => {
-                clientSocket.write(postgresData);
-            });
-
-            // ---- Agora capturamos a senha ----
-            clientSocket.on("data", (chunk2) => {
-                // 'p' = PasswordMessage
-                if (chunk2[0] === 0x70) {
-                    const len = chunk2.readInt32BE(1);
-                    const password = chunk2.toString("utf8", 5, len);
-
-                    console.log(`🔑 Senha capturada: ${password}`);
-                }
-
-                // Passa tudo para o Postgres real
-                if (pgSocket) pgSocket.write(chunk2);
-            });
-
+        // ---- 1) SSLRequest ----
+        if (!sslHandled && length === 8 && code === SSL_REQUEST_CODE) {
+            client.write("N");
+            sslHandled = true;
             buffer = Buffer.alloc(0);
             return;
         }
 
-        // Se já existe pgSocket → é fluxo normal (passthrough)
-        pgSocket.write(chunk);
+        // ---- 2) StartupMessage ----
+        if (code !== PG_PROTOCOL_VERSION) {
+            sendPgError(client, "Protocolo inválido");
+            return;
+        }
+
+        // Parse StartupMessage
+        let off = 8;
+        let user = null;
+        let db = null;
+
+        while (off < length) {
+            const kEnd = buffer.indexOf(0, off);
+            if (kEnd === -1) break;
+            const key = buffer.toString("utf8", off, kEnd);
+            off = kEnd + 1;
+
+            if (key === "") break;
+
+            const vEnd = buffer.indexOf(0, off);
+            if (vEnd === -1) break;
+            const val = buffer.toString("utf8", off, vEnd);
+            off = vEnd + 1;
+
+            if (key === "user") user = val;
+            if (key === "database") db = val;
+        }
+
+        if (!user) {
+            sendPgError(client, "StartupMessage sem usuario");
+            return;
+        }
+
+        if (!DOCKER_HOST_REGEX.test(user)) {
+            sendPgError(client, `Host inválido: ${user}`);
+            return;
+        }
+
+        targetHost = user;
+
+        // ---- Conectar ao Postgres ----
+        pgSocket = net.connect(TARGET_PORT, targetHost);
+
+        pgSocket.on("connect", () => {
+            // Envia o StartupMessage original SEM mexer
+            pgSocket.write(buffer);
+        });
+
+        pgSocket.on("error", (err) => {
+            console.log("Erro PG:", err.code);
+            sendPgError(client, `Host ${targetHost} não encontrado`);
+        });
+
+        pgSocket.on("data", (data) => {
+            client.write(data);
+        });
+
+        pgSocket.on("end", () => client.end());
+
+        buffer = Buffer.alloc(0);
     });
 });
 
 server.listen(PORT, () => {
-    console.log(`🚀 Proxy Postgres ativo na porta ${PORT}`);
+    console.log(`🚀 Proxy ativo na porta ${PORT}`);
 });
