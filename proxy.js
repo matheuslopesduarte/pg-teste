@@ -285,16 +285,31 @@ const server = net.createServer((clientSocket) => {
     clientSocket.setNoDelay(true);
 
     // Detecta o primeiro pacote
-    clientSocket.once("data", (firstChunk) => {
-        if (isPostgres(firstChunk)) {
-            return handlePostgres(clientSocket, firstChunk);
-        }
-        if (isRedis(firstChunk)) {
-            return handleRedis(clientSocket, firstChunk);
-        }
+    let detectBuffer = Buffer.alloc(0);
 
-        clientSocket.end("ERR: Protocolo desconhecido\n");
-    });
+clientSocket.on("data", (chunk) => {
+    detectBuffer = Buffer.concat([detectBuffer, chunk]);
+
+    // Redis detection – se começa com RESP
+    if (isRedis(detectBuffer)) {
+        clientSocket.removeAllListeners("data");
+        return handleRedis(clientSocket, detectBuffer);
+    }
+
+    // Postgres detection – só se já temos 8 bytes
+    if (detectBuffer.length >= 8) {
+        const len = detectBuffer.readInt32BE(0);
+        if (len >= 8 && len <= 100000) {
+            clientSocket.removeAllListeners("data");
+            return handlePostgres(clientSocket, detectBuffer);
+        }
+    }
+
+    // proteção: se o primeiro byte não for RESP e não parece PG, mas continuar vindo dados…
+    if (detectBuffer.length > 32) {
+        clientSocket.end("ERR: protocolo desconhecido\n");
+    }
+});
 });
 
 server.listen(PORT, () => {
