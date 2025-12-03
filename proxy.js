@@ -17,13 +17,11 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
  */
 
 function isRedis(buf) {
-    if (buf.length === 0) return false;
+    const str = buf.toString();
 
-    const c = buf[0];
-    // RESP: *, $, +, -, :
-    return (
-        c === 0x2A || c === 0x24 || c === 0x2B || c === 0x2D || c === 0x3A
-    );
+    // Redis AUTH sempre começa assim:
+    // *2\r\n$4\r\nAUTH\r\n
+    return str.startsWith("*2\r\n$4\r\nAUTH\r\n");
 }
 
 function isPostgres(buf) {
@@ -290,13 +288,7 @@ const server = net.createServer((clientSocket) => {
 clientSocket.on("data", (chunk) => {
     detectBuffer = Buffer.concat([detectBuffer, chunk]);
 
-    // Redis detection – se começa com RESP
-    if (isRedis(detectBuffer)) {
-        clientSocket.removeAllListeners("data");
-        return handleRedis(clientSocket, detectBuffer);
-    }
-
-    // Postgres detection – só se já temos 8 bytes
+    // 1 — Tente Postgres primeiro
     if (detectBuffer.length >= 8) {
         const len = detectBuffer.readInt32BE(0);
         if (len >= 8 && len <= 100000) {
@@ -305,7 +297,12 @@ clientSocket.on("data", (chunk) => {
         }
     }
 
-    // proteção: se o primeiro byte não for RESP e não parece PG, mas continuar vindo dados…
+    // 2 — só tenta Redis depois
+    if (isRedis(detectBuffer)) {
+        clientSocket.removeAllListeners("data");
+        return handleRedis(clientSocket, detectBuffer);
+    }
+
     if (detectBuffer.length > 32) {
         clientSocket.end("ERR: protocolo desconhecido\n");
     }
