@@ -2,8 +2,6 @@ import processStartup from "../helpers/postgres/processStartup.js";
 import { PG_SSL_REQUEST_CODE } from "../data.js";
 
 function handlePostgres(clientSocket, firstChunk) {
-  console.log("[PROXY] Postgres DETECTED");
-
   const initial = Buffer.from(firstChunk);
 
   if (initial.length >= 8) {

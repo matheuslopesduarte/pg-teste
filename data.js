@@ -8,3 +8,6 @@ export const PG_TARGET_USERNAME = process.env.PG_TARGET_USERNAME || "postgres";
 export const PG_PROTOCOL_VERSION = 0x00030000;
 
 export const REDIS_TARGET_PORT = parseInt(process.env.REDIS_TARGET_PORT || "6379", 10);
+
+export const AMQP_TARGET_PORT = parseInt(process.env.AMQP_TARGET_PORT || "5672", 10);
+export const AMQP_TARGET_USERNAME = process.env.AMQP_TARGET_USERNAME || "rabbitmq";

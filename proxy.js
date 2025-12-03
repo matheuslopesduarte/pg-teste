@@ -81,7 +81,7 @@ function sendPgError(client, message) {
     const out = Buffer.concat([Buffer.from("E"), len, f]);
     try {
         client.write(out);
-    } catch {}
+    } catch { }
     client.end();
 }
 
@@ -133,13 +133,13 @@ function handleRedis(clientSocket, firstChunk) {
         console.log("[PROXY][Redis] erro:", e.message);
         try {
             clientSocket.end("-ERR Falha ao conectar no Redis backend\r\n");
-        } catch {}
+        } catch { }
     });
 
     redisSocket.on("close", () => {
         try {
             clientSocket.end();
-        } catch {}
+        } catch { }
     });
 }
 
@@ -265,29 +265,34 @@ const server = net.createServer((clientSocket) => {
     // Detecta o primeiro pacote
     let detectBuffer = Buffer.alloc(0);
 
-clientSocket.on("data", (chunk) => {
-    detectBuffer = Buffer.concat([detectBuffer, chunk]);
+    clientSocket.on("data", (chunk) => {
+        detectBuffer = Buffer.concat([detectBuffer, chunk]);
 
-    // Redis detection – se começa com RESP
-    if (isRedis(detectBuffer)) {
-        clientSocket.removeAllListeners("data");
-        return handleRedis(clientSocket, detectBuffer);
-    }
+        if (isRedis(detectBuffer)) {
+            console.log("[PROXY] Redis DETECTED from user: " + clientSocket.remoteAddress);
 
-    // Postgres detection – só se já temos 8 bytes
-    if (detectBuffer.length >= 8) {
-        const len = detectBuffer.readInt32BE(0);
-        if (len >= 8 && len <= 100000) {
+            clientSocket.removeAllListeners("data");
+            return handleRedis(clientSocket, detectBuffer);
+        }
+
+        if (isPostgres(detectBuffer)) {
+            console.log("[PROXY] Postgres DETECTED from user: " + clientSocket.remoteAddress);
+
             clientSocket.removeAllListeners("data");
             return handlePostgres(clientSocket, detectBuffer);
         }
-    }
 
-    // proteção: se o primeiro byte não for RESP e não parece PG, mas continuar vindo dados…
-    if (detectBuffer.length > 32) {
-        clientSocket.end("ERR: protocolo desconhecido\n");
-    }
-});
+        if (isAMQP(detectBuffer)) {
+            console.log("[PROXY] AMQP DETECTED from user: " + clientSocket.remoteAddress);
+
+            clientSocket.removeAllListeners("data");
+            return handleAMQP(clientSocket, detectBuffer);
+        }
+
+        clientSocket.end("ERR: protocolo não suportado pelo fabroku proxy\n");
+
+        console.log(detectBuffer);
+    });
 });
 
 server.listen(PORT, () => {

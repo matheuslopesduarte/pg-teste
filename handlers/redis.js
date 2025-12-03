@@ -3,7 +3,6 @@ import { HOST_REGEX, REDIS_TARGET_PORT } from "../data.js";
 import net from "net";
 
 function handleRedis(clientSocket, firstChunk) {
-  console.log("[PROXY] Redis DETECTED");
 
   const passRaw = parseRedisAuth(firstChunk);
   if (!passRaw) {
@@ -34,8 +33,8 @@ function handleRedis(clientSocket, firstChunk) {
   redisSocket.on("error", (e) => {
     console.log("[PROXY][Redis] erro:", e.message);
     try {
-      clientSocket.end("-ERR Falha ao conectar no Redis backend\r\n");
-    } catch {}
+      clientSocket.end(`-ERR Falha ao conectar host ${container}\r\n`);
+    } catch { }
   });
 
   redisSocket.on("connect", () => {
@@ -53,7 +52,7 @@ function handleRedis(clientSocket, firstChunk) {
   redisSocket.on("close", () => {
     try {
       clientSocket.end();
-    } catch {}
+    } catch { }
   });
 }
 
