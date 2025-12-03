@@ -2,8 +2,10 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY proxy.js /app/proxy.js
+COPY ./ /app/
 
-EXPOSE 6432
+EXPOSE 1022
 
-CMD ["node", "proxy.js"]
+ENV PORT=1022
+
+CMD ["node", "server.js"]
