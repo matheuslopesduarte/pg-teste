@@ -143,140 +143,118 @@ function handleRedis(clientSocket, firstChunk) {
     });
 }
 
+function processStartup(clientSocket, buf) {
+    if (buf.length < 8) {
+        return sendPgError(clientSocket, "StartupMessage inválida");
+    }
+
+    const startupLen = buf.readInt32BE(0);
+    const proto = buf.readInt32BE(4);
+
+    if (proto !== PG_PROTOCOL_VERSION) {
+        return sendPgError(clientSocket, "Protocolo inválido");
+    }
+
+    let off = 8;
+    let clientUser = null;
+    let clientDb = null;
+    const otherParams = {};
+
+    while (off < startupLen) {
+        const kEnd = buf.indexOf(0, off);
+        if (kEnd === -1) break;
+        const key = buf.toString("utf8", off, kEnd);
+        off = kEnd + 1;
+        if (!key) break;
+
+        const vEnd = buf.indexOf(0, off);
+        if (vEnd === -1) break;
+        const value = buf.toString("utf8", off, vEnd);
+        off = vEnd + 1;
+
+        if (key === "user") clientUser = value;
+        else if (key === "database") clientDb = value;
+        else otherParams[key] = value;
+    }
+
+    if (!clientUser) {
+        return sendPgError(clientSocket, "StartupMessage sem user");
+    }
+
+    const targetHost = clientUser; // <---- HOST = user enviado pelo cliente
+    console.log(`[PROXY] PG Startup → target host=${targetHost} db=${clientDb}`);
+
+    // ====== Conectar ao postgres real ======
+    const pgSocket = net.connect(PG_TARGET_PORT, targetHost, () => {
+        console.log("[PROXY] Conectado ao Postgres real");
+
+        // Construir Startup limpo usando:
+        //   user = postgres
+        //   database = o mesmo do cliente
+        //   outros params preservados
+        const params = {
+            user: "postgres",       // <---- usuário real fixo
+            database: clientDb || "postgres",
+            ...otherParams,
+        };
+
+        const startupBuf = buildStartupMessage(params);
+
+        pgSocket.write(startupBuf);
+
+        // Se o cliente tinha enviado mais bytes junto do startup original, reenviar
+        const leftover = buf.slice(startupLen);
+        if (leftover.length > 0) pgSocket.write(leftover);
+    });
+
+    // ===== Bridge normal ======
+    pgSocket.on("data", (data) => {
+        clientSocket.write(data);
+    });
+
+    clientSocket.on("data", (chunk) => {
+        pgSocket.write(chunk);
+    });
+
+    pgSocket.on("error", (err) => {
+        console.log("[PROXY] PG erro:", err.message);
+        sendPgError(clientSocket, `Erro ao conectar ao host ${targetHost}`);
+    });
+
+    clientSocket.on("close", () => pgSocket.destroy());
+    pgSocket.on("close", () => clientSocket.destroy());
+}
+
 /**
  * HANDLER POSTGRES
  */
 function handlePostgres(clientSocket, firstChunk) {
     console.log("[PROXY] Postgres DETECTED");
 
-    let initialBuffer = Buffer.from(firstChunk);
-    let sslHandled = false;
-    let pgSocket = null;
-    let targetHost = null;
-    let handshakeTimer = null;
+    const initial = Buffer.from(firstChunk);
 
-    function startHandshakeTimer() {
-        clearTimeout(handshakeTimer);
-        handshakeTimer = setTimeout(() => {
-            console.log("[PROXY] Handshake timeout");
-            sendPgError(clientSocket, "Timeout ao negociar com servidor");
-            if (pgSocket) pgSocket.destroy();
-        }, HANDSHAKE_TIMEOUT_MS);
+    // --- Detecta SSLRequest ---
+    if (initial.length >= 8) {
+        const len = initial.readInt32BE(0);
+        const code = initial.readInt32BE(4);
+
+        if (len === 8 && code === SSL_REQUEST_CODE) {
+            console.log("[PROXY] SSLRequest -> N");
+
+            // Não suportamos SSL
+            clientSocket.write("N");
+
+            // Agora pegamos o verdadeiro StartupMessage
+            return clientSocket.once("data", (startupChunk) =>
+                processStartup(clientSocket, startupChunk)
+            );
+        }
     }
 
-    clientSocket.on("data", (chunk) => {
-        // Pass-through caso já esteja conectado
-        if (pgSocket && pgSocket.writable) {
-            if (chunk.length > 0 && chunk[0] === 0x70) {
-                try {
-                    const len = chunk.readInt32BE(1);
-                    const pwd = chunk.toString("utf8", 5, 4 + len - 4);
-                    console.log("[PROXY] 🔑 PasswordMessage:", pwd);
-                } catch {}
-            }
-
-            return pgSocket.write(chunk);
-        }
-
-        // Caso inicial
-        initialBuffer = Buffer.concat([initialBuffer, chunk]);
-
-        // SSLRequest
-        if (!sslHandled && initialBuffer.length >= 8) {
-            const len = initialBuffer.readInt32BE(0);
-            const code = initialBuffer.readInt32BE(4);
-            if (len === 8 && code === SSL_REQUEST_CODE) {
-                console.log("[PROXY] SSLRequest → N");
-                clientSocket.write("N");
-                sslHandled = true;
-                initialBuffer = initialBuffer.slice(8);
-            }
-        }
-
-        if (initialBuffer.length < 8) return;
-
-        const startupLen = initialBuffer.readInt32BE(0);
-        if (initialBuffer.length < startupLen) return;
-
-        const proto = initialBuffer.readInt32BE(4);
-        if (proto !== PG_PROTOCOL_VERSION) {
-            sendPgError(clientSocket, "Protocolo inválido");
-            return;
-        }
-
-        let off = 8;
-        let clientUser = null;
-        let clientDb = null;
-        const otherParams = {};
-
-        while (off < startupLen) {
-            const kEnd = initialBuffer.indexOf(0, off);
-            if (kEnd === -1) break;
-            const key = initialBuffer.toString("utf8", off, kEnd);
-            off = kEnd + 1;
-            if (key === "") break;
-
-            const vEnd = initialBuffer.indexOf(0, off);
-            if (vEnd === -1) break;
-            const val = initialBuffer.toString("utf8", off, vEnd);
-            off = vEnd + 1;
-
-            if (key === "user") clientUser = val;
-            else if (key === "database") clientDb = val;
-            else otherParams[key] = val;
-        }
-
-        if (!clientUser) {
-            sendPgError(clientSocket, "StartupMessage sem usuario");
-            return;
-        }
-
-        if (!DOCKER_HOST_REGEX.test(clientUser)) {
-            sendPgError(clientSocket, `Hostname inválido: ${clientUser}`);
-            return;
-        }
-
-        targetHost = clientUser;
-
-        console.log(
-            `[PROXY] PG Startup: user=${clientUser}, db=${clientDb}`
-        );
-
-        pgSocket = net.connect(PG_TARGET_PORT, targetHost);
-
-        pgSocket.on("connect", () => {
-            console.log("[PROXY] Conectado ao Postgres real");
-
-            const params = {
-                user: "postgres",
-                database: clientDb || "postgres",
-                ...otherParams,
-            };
-
-            const startupBuf = buildStartupMessage(params);
-            pgSocket.write(startupBuf);
-
-            const rest = initialBuffer.slice(startupLen);
-            if (rest.length > 0) pgSocket.write(rest);
-
-            startHandshakeTimer();
-        });
-
-        pgSocket.on("data", (data) => {
-            clearTimeout(handshakeTimer);
-            clientSocket.write(data);
-        });
-
-        pgSocket.on("error", (err) => {
-            console.log("[PROXY] Erro PG:", err.message);
-            sendPgError(clientSocket, `Erro conectando ao host ${targetHost}`);
-        });
-
-        pgSocket.on("close", () => clearTimeout(handshakeTimer));
-
-        initialBuffer = Buffer.alloc(0);
-    });
+    // Já é StartupMessage
+    processStartup(clientSocket, initial);
 }
+
 
 /**
  * SERVER
