@@ -1,26 +1,27 @@
-import { AMQP_LOCALE } from "../../data.js";
- 
+import buildAmqpTable from "./buildAmqpTable.js";
+import encodeLongString from "./encodeLongString.js"; 
+import encodeShortString from "./encodeShortString.js";
+
 function buildRealStartOk(user, pass) {
-    const parts = [];
+    const method = Buffer.alloc(4);
+    method.writeUInt16BE(10, 0); 
+    method.writeUInt16BE(11, 2); 
 
-    const header = Buffer.alloc(4);
-    header.writeUInt16BE(10);
-    header.writeUInt16BE(11);
-    parts.push(header);
+    const clientProps = buildAmqpTable({
+        product: "proxy-amqp",
+        version: "1.0",
+        platform: "nodejs",
+    });
 
-    parts.push(Buffer.from([0, 0, 0, 0]));
-
-    parts.push(Buffer.from([5, ...Buffer.from("PLAIN")]));
-
-    const sasl = Buffer.from(`\0${user}\0${pass}`);
-    const respLen = Buffer.alloc(4);
-    respLen.writeUInt32BE(sasl.length);
-    parts.push(respLen);
-    parts.push(sasl);
-
-    parts.push(Buffer.from([5, ...Buffer.from(AMQP_LOCALE)]));
-
-    return Buffer.concat(parts);
+    const mechanism = encodeShortString("PLAIN");
+    const response = encodeLongString(`\0${user}\0${pass}`);
+    const locale = encodeShortString("en_US");
+    return Buffer.concat([
+        method,
+        clientProps,
+        mechanism,
+        response,
+        locale
+    ]);
 }
-
 export default buildRealStartOk;
