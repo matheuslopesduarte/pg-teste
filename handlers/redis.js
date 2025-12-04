@@ -20,7 +20,7 @@ function handleRedis(clientSocket, firstChunk) {
   }
 
   if (!HOST_REGEX.test(container)) {
-    clientSocket.end("-ERR Container inválido\r\n");
+    clientSocket.end(`-ERR ERR Container inválido: ${container}\r\n`);
     return;
   }
 

@@ -6,14 +6,14 @@ import net from "net";
 const PG_PROTOCOL_VERSION = 0x00030000;
 function processStartup(clientSocket, buf) {
   if (buf.length < 8) {
-    return sendPgError(clientSocket, "StartupMessage inválida");
+    return sendPgError(clientSocket, "ERRStartupMessage inválida");
   }
 
   const startupLen = buf.readInt32BE(0);
   const proto = buf.readInt32BE(4);
 
   if (proto !== PG_PROTOCOL_VERSION) {
-    return sendPgError(clientSocket, "Protocolo inválido");
+    return sendPgError(clientSocket, "ERR Protocolo inválido");
   }
 
   let off = 8;
@@ -39,11 +39,11 @@ function processStartup(clientSocket, buf) {
   }
 
   if (!clientUser) {
-    return sendPgError(clientSocket, "StartupMessage sem user");
+    return sendPgError(clientSocket, "ERR StartupMessage sem user");
   }
 
   if (!HOST_REGEX.test(clientUser)) {
-    return sendPgError(clientSocket, `User inválido: ${clientUser}`);
+    return sendPgError(clientSocket, `ERR Container inválido: ${clientUser}`);
   }
 
   const targetHost = clientUser;
@@ -76,7 +76,7 @@ function processStartup(clientSocket, buf) {
 
   pgSocket.on("error", (err) => {
     console.log("[PROXY] PG erro:", err.message);
-    sendPgError(clientSocket, `Erro ao conectar ao host ${targetHost}`);
+    sendPgError(clientSocket, `ERR Erro ao conectar ao host ${targetHost}`);
   });
 
   clientSocket.on("close", () => pgSocket.destroy());

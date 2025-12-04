@@ -11,3 +11,4 @@ export const REDIS_TARGET_PORT = parseInt(process.env.REDIS_TARGET_PORT || "6379
 
 export const AMQP_TARGET_PORT = parseInt(process.env.AMQP_TARGET_PORT || "5672", 10);
 export const AMQP_TARGET_USERNAME = process.env.AMQP_TARGET_USERNAME || "rabbitmq";
+export const AMQP_LOCALE = process.env.AMQP_LOCALE || "en_US";
