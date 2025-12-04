@@ -1,6 +1,6 @@
 
 export const HOST_REGEX = /^([a-zA-Z0-9][a-zA-Z0-9_.-]+)$/;
-export const PORT = parseInt(process.env.PORT || "5432", 10);
+export const PORT = parseInt(process.env.PROXY_PORT || "5432", 10);
 
 export const PG_SSL_REQUEST_CODE = process.env.PG_SSL_REQUEST_CODE || 80877103;
 export const PG_TARGET_PORT = parseInt(process.env.PG_TARGET_PORT || "5432", 10);
