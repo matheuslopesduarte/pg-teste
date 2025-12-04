@@ -1,3 +1,5 @@
+import { PG_PROTOCOL_VERSION } from "../../data.js";
+
 function buildStartupMessage(params) {
   const parts = [];
   for (const [k, v] of Object.entries(params)) {

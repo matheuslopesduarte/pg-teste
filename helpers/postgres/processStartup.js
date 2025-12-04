@@ -1,9 +1,9 @@
 import { HOST_REGEX, PG_TARGET_PORT, PG_TARGET_USERNAME } from "../../data.js";
+import { PG_PROTOCOL_VERSION } from "../../data.js";
 import sendPgError from "./sendPgError.js";
 import buildStartupMessage from "./buildStartupMessage.js";
 import net from "net";
 
-const PG_PROTOCOL_VERSION = 0x00030000;
 function processStartup(clientSocket, buf) {
   if (buf.length < 8) {
     return sendPgError(clientSocket, "ERRStartupMessage inválida");
